@@ -4,7 +4,7 @@ from stock_model import get_stock_forecast
 
 st.set_page_config(page_title="Finance Assistant Demo", layout="wide")
 
-st.title("📈 Finance Assistant Demo")
+st.title("📈 Stock Market Assistant")
 
 # Predicting Market Health, whether or not to invest based on S&P 500 data
 st.header("📊 S&P 500 Market Prediction")
@@ -51,3 +51,4 @@ if st.button("Predict Stock Price") and stock_code:
             ax.set_ylabel("Predicted Price")
             ax.legend()
             st.pyplot(fig)
+
