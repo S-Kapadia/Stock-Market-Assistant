@@ -4,7 +4,7 @@ import yfinance as yf
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler  # changed to MinMax
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -14,7 +14,7 @@ class PredictionModel(nn.Module):
         super(PredictionModel, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
@@ -26,15 +26,15 @@ class PredictionModel(nn.Module):
 
 # Defining forecast
 def get_stock_forecast(ticker: str, start_date="2020-01-01", seq_length=30, 
-                       num_epochs=50, hidden_dim=32, future_days=5):
-    #training done based on past stock history et. 200 onwards
-
+                       num_epochs=200, hidden_dim=64, future_days=5):
+    #training done based on past stock history et. 2020 onwards
     
     df = yf.download(ticker, start=start_date)
     if df.empty:
         return {"error": f"No data found for ticker {ticker}"}
 
-    scaler = StandardScaler()
+    #scale close prices
+    scaler = MinMaxScaler(feature_range=(0, 1))
     df['Close_scaled'] = scaler.fit_transform(df[['Close']])
 
     #Sequence building
@@ -49,7 +49,7 @@ def get_stock_forecast(ticker: str, start_date="2020-01-01", seq_length=30,
     X = torch.from_numpy(X).unsqueeze(-1).float().to(device)  # (samples, seq_len-1, 1)
     y = torch.from_numpy(y).unsqueeze(-1).float().to(device)  # (samples, 1)
 
-    # Train/Test
+    # Train/Test split
     train_size = int(0.8 * len(X))
     X_train, X_test = X[:train_size], X[train_size:]
     y_train, y_test = y[:train_size], y[train_size:]
@@ -68,6 +68,14 @@ def get_stock_forecast(ticker: str, start_date="2020-01-01", seq_length=30,
         loss.backward()
         optimizer.step()
 
+        #monitoring validation
+        if (epoch + 1) % 50 == 0:
+            model.eval()
+            with torch.no_grad():
+                val_pred = model(X_test)
+                val_loss = criterion(val_pred, y_test).item()
+            print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {loss.item():.6f}, Val Loss: {val_loss:.6f}")
+
     # future predictions
     model.eval()
     last_sequence = df['Close_scaled'].values[-seq_length:]
@@ -77,13 +85,18 @@ def get_stock_forecast(ticker: str, start_date="2020-01-01", seq_length=30,
     with torch.no_grad():
         for _ in range(future_days):
             next_pred = model(current_seq)
-            future_preds.append(next_pred.item())
-            current_seq = torch.cat((current_seq[:, 1:, :], next_pred.view(1, 1, 1)), dim=1)
 
-    # trnsform to real prices
+            # blend with last known price to reduce drift
+            blended = 0.7 * next_pred.item() + 0.3 * current_seq[0, -1, 0].item()
+            future_preds.append(blended)
+
+            #update sequence with new prediction
+            current_seq = torch.cat((current_seq[:, 1:, :], torch.tensor([[[blended]]], device=device)), dim=1)
+
+    #transform back to real prices
     future_preds = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))
 
-    # Generate future dates
+    #Generate future dates
     future_dates = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=future_days)
 
     #return dict
@@ -95,5 +108,3 @@ def get_stock_forecast(ticker: str, start_date="2020-01-01", seq_length=30,
             for date, price in zip(future_dates, future_preds)
         ]
     }
-
-
